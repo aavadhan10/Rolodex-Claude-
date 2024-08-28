@@ -5,7 +5,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import normalize
 
 # Initialize Claude API using environment variable
-claude_api_key = st.secrets["CLAUDE_API_KEY"]
+claude_api_key = st.secrets["claude"]["CLAUDE_API_KEY"]
 claude_api_url = "https://api.claude.ai/v1/chat/completions"  # Example endpoint
 
 # Function to call Claude
