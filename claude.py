@@ -6,7 +6,9 @@ from sklearn.preprocessing import normalize
 
 # Initialize Claude API using environment variable
 claude_api_key = st.secrets["claude"]["CLAUDE_API_KEY"]
-claude_api_url = "https://api.claude.ai/v1/chat/completions"  # Example endpoint
+claude_api_url = "https://api.claude.ai/v1/chat/completions"
+
+st.write("Starting app...")
 
 # Function to call Claude
 def call_claude(messages):
@@ -15,16 +17,18 @@ def call_claude(messages):
         "Content-Type": "application/json"
     }
     data = {
-        "model": "claude-v1",  # Adjust model name if necessary
+        "model": "claude-v1",
         "messages": messages,
         "max_tokens": 150,
         "temperature": 0.9,
     }
     
     try:
-        response = requests.post(claude_api_url, headers=headers, json=data, timeout=10)  # Timeout after 10 seconds
-        response.raise_for_status()  # Raises an error for bad responses (4xx, 5xx)
+        st.write("Sending request to Claude...")
+        response = requests.post(claude_api_url, headers=headers, json=data, timeout=10)
+        response.raise_for_status()
         response_json = response.json()
+        st.write("Received response from Claude.")
         return response_json['choices'][0]['message']['content'].strip()
     except requests.exceptions.Timeout:
         st.error("The request to Claude timed out.")
@@ -42,18 +46,18 @@ def vectorize_data(matters_data, text_column='Matter Description'):
 # Query Claude with Data
 def query_claude_with_data(question, matters_data, matters_index, matters_vectorizer):
     try:
-        # Pre-process and vectorize the question
+        st.write("Vectorizing the question...")
         question = ' '.join(question.split()[-3:])
         question_vec = matters_vectorizer.transform([question])
         
-        # Perform vector search
+        st.write("Performing vector search...")
         D, I = matters_index.search(normalize(question_vec).toarray(), k=10)
         if I.size > 0 and not (I == -1).all():
             relevant_data = matters_data.iloc[I[0]]
         else:
-            relevant_data = matters_data.head(1)  # Fallback to the first entry if no match found
+            relevant_data = matters_data.head(1)  # Fallback
         
-        # Optimize data filtering and handling large datasets
+        st.write("Filtering the data...")
         filtered_data = relevant_data[['Attorney', 'Practice Area', 'Matter Description', 'Work Email', 'Role Detail']]
         filtered_data = filtered_data.rename(columns={'Role Detail': 'Role'}).drop_duplicates(subset=['Attorney'])
         
@@ -61,32 +65,29 @@ def query_claude_with_data(question, matters_data, matters_index, matters_vector
             filtered_data = matters_data[['Attorney', 'Practice Area', 'Matter Description', 'Work Email', 'Role Detail']]
             filtered_data = filtered_data.rename(columns={'Role Detail': 'Role'}).dropna(subset=['Attorney']).drop_duplicates(subset=['Attorney']).head(1)
 
-        # Create context for Claude's recommendation
         context = filtered_data.to_string(index=False)
         messages = [
             {"role": "system", "content": "You are the CEO of a prestigious law firm..."},
             {"role": "user", "content": f"Based on the following information, please make a recommendation:\n\n{context}\n\nRecommendation:"}
         ]
         
-        # Call Claude API
+        st.write("Calling Claude API with filtered data...")
         claude_response = call_claude(messages)
         if not claude_response:
             return  # Exit if Claude API failed
         
-        # Process recommendations
         recommendations = claude_response.split('\n')
         recommendations = [rec for rec in recommendations if rec.strip()]
         recommendations = list(dict.fromkeys(recommendations))
         recommendations_df = pd.DataFrame(recommendations, columns=['Recommendation Reasoning'])
         
-        # Display the results
+        st.write("Displaying results...")
         top_recommended_lawyers = filtered_data.drop_duplicates(subset=['Attorney'])
         st.write("All Potential Lawyers with Recommended Skillset:")
         st.write(top_recommended_lawyers.to_html(index=False), unsafe_allow_html=True)
         st.write("Recommendation Reasoning:")
         st.write(recommendations_df.to_html(index=False), unsafe_allow_html=True)
 
-        # Display each lawyer's matters
         for lawyer in top_recommended_lawyers['Attorney'].unique():
             st.write(f"**{lawyer}'s Matters:**")
             lawyer_matters = matters_data[matters_data['Attorney'] == lawyer][['Practice Area', 'Matter Description']]
