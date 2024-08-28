@@ -95,7 +95,7 @@ def query_claude_with_data(question, matters_data, matters_index, matters_vector
         
         st.write("Processing Claude's recommendations...")
         recommendations = claude_response.split('\n')
-        recommendations are [rec for rec in recommendations if rec.strip()]
+        recommendations = [rec for rec in recommendations if rec.strip()]
         recommendations = list(dict.fromkeys(recommendations))
         recommendations_df = pd.DataFrame(recommendations, columns=['Recommendation Reasoning'])
 
@@ -110,6 +110,7 @@ def query_claude_with_data(question, matters_data, matters_index, matters_vector
             st.write(f"**{lawyer}'s Matters:**")
             lawyer_matters = matters_data[matters_data['Attorney'] == lawyer][['Practice Area', 'Matter Description']]
             st.write(lawyer_matters.to_html(index=False), unsafe_allow_html=True)
+
 
     except Exception as e:
         st.error(f"Error querying Claude: {e}")
