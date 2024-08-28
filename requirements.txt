@@ -4,3 +4,5 @@ scikit-learn==1.2.2
 faiss-cpu==1.7.3
 requests==2.31.0
 python-dotenv==1.0.0
+scikit-learn==latest
+cython==latest
