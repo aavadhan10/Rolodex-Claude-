@@ -1,3 +1,4 @@
+import streamlit as st
 import requests
 
 # Initialize Claude API using environment variable
