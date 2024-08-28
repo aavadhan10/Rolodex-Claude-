@@ -8,7 +8,13 @@ import time
 
 # Initialize Claude API using environment variable
 claude_api_key = st.secrets["claude"]["CLAUDE_API_KEY"]
-claude_api_url = "https://api.anthropic.com/v1/messages"  # Updated API endpoint for Claude 3.5 Sonnet
+
+# Toggle between new and old API endpoints
+use_new_api = st.sidebar.checkbox("Use new Claude API", value=True)
+if use_new_api:
+    claude_api_url = "https://api.anthropic.com/v1/messages"
+else:
+    claude_api_url = "https://api.anthropic.com/v1/complete"
 
 # Load and clean CSV data with specified encoding
 @st.cache_data
@@ -33,32 +39,55 @@ def create_vector_db(data, columns):
     st.write(f"Vector DB created in {time.time() - start_time:.2f} seconds")
     return index, vectorizer
 
-# Function to call Claude 3.5 Sonnet using POST method
+# Function to call Claude with debugging information
 def call_claude(messages):
     headers = {
         "Authorization": f"Bearer {claude_api_key}",
         "Content-Type": "application/json",
         "anthropic-version": "2023-06-01"
     }
-    data = {
-        "model": "claude-3.5-sonnet",
-        "messages": messages,
-        "max_tokens": 150,
-        "temperature": 0.9
-    }
+    
+    if use_new_api:
+        data = {
+            "model": "claude-3.5-sonnet",
+            "messages": messages,
+            "max_tokens": 150,
+            "temperature": 0.9
+        }
+    else:
+        data = {
+            "model": "claude-3.5-sonnet",
+            "prompt": "\n\n".join([f"{m['role']}: {m['content']}" for m in messages]),
+            "max_tokens_to_sample": 150,
+            "temperature": 0.9
+        }
     
     try:
         st.write("Calling Claude 3.5 Sonnet...")
+        st.write(f"API URL: {claude_api_url}")
+        st.write(f"Headers: {headers}")
+        st.write(f"Data: {data}")
+        
         response = requests.post(claude_api_url, headers=headers, json=data, timeout=10)
+        
+        st.write(f"Response status code: {response.status_code}")
+        st.write(f"Response headers: {response.headers}")
+        st.write(f"Response content: {response.text}")
+        
         response.raise_for_status()
         response_json = response.json()
         st.write("Received response from Claude 3.5 Sonnet")
-        return response_json['content'][0]['text'].strip()
+        
+        if use_new_api:
+            return response_json['content'][0]['text'].strip()
+        else:
+            return response_json['completion'].strip()
     except requests.exceptions.Timeout:
         st.error("The request to Claude timed out.")
         return None
     except requests.exceptions.RequestException as e:
         st.error(f"An error occurred while communicating with Claude: {e}")
+        st.error(f"Response content: {e.response.text if e.response else 'No response content'}")
         return None
 
 # Function to query Claude with context from the vector DB
