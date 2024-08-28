@@ -1,94 +1,57 @@
+import anthropic
 import streamlit as st
-import requests
 import pandas as pd
 import faiss
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import normalize
-import time
+from dotenv import load_dotenv
+import os 
 
-# Initialize Claude API using environment variable
-claude_api_key = st.secrets["claude"]["CLAUDE_API_KEY"]
-claude_api_url = "https://api.anthropic.com/v1/messages"
+# Load environment variables
+load_dotenv()
+
+# Initialize Anthropic API using environment variable
+client = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
 
 # Load and clean CSV data with specified encoding
 @st.cache_data
 def load_and_clean_data(file_path, encoding='latin1'):
-    start_time = time.time()
     data = pd.read_csv(file_path, encoding=encoding)
-    data.columns = data.columns.str.replace('ï»¿', '').str.replace('Ã', '').str.strip()  # Clean unusual characters and whitespace
-    data = data.loc[:, ~data.columns.str.contains('^Unnamed')]  # Remove unnamed columns
-    st.write(f"Data loaded and cleaned in {time.time() - start_time:.2f} seconds")
+    data.columns = data.columns.str.replace('ï»¿', '').str.replace('Ã', '').str.strip()
+    data = data.loc[:, ~data.columns.str.contains('^Unnamed')]
     return data
 
 # Create vector database for a given dataframe and columns
-@st.cache_resource
+@st.cache(allow_output_mutation=True)
 def create_vector_db(data, columns):
-    start_time = time.time()
     combined_text = data[columns].fillna('').apply(lambda x: ' '.join(x.astype(str)), axis=1)
     vectorizer = TfidfVectorizer(stop_words='english', max_features=5000)
     X = vectorizer.fit_transform(combined_text)
     X = normalize(X)
     index = faiss.IndexFlatL2(X.shape[1])
     index.add(X.toarray())
-    st.write(f"Vector DB created in {time.time() - start_time:.2f} seconds")
     return index, vectorizer
 
-# Function to call Claude with debugging information
+# Function to call Claude 3.5 Sonnet
 def call_claude(messages):
-    headers = {
-        "x-api-key": claude_api_key,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json"
-    }
-    
-    data = {
-        "model": "claude-3.5-sonnet",
-        "max_tokens": 150,
-        "messages": messages,
-        "temperature": 0.9
-    }
+    response = client.messages.create(
+        model="claude-3-sonnet-20240229",
+        max_tokens=150,
+        temperature=0.9,
+        messages=messages
+    )
+    return response.content[0].text
 
-    try:
-        st.write("Calling Claude 3.5 Sonnet...")
-        st.write(f"API URL: {claude_api_url}")
-        st.write(f"Headers: {headers}")
-        st.write(f"Data: {data}")
-
-        response = requests.post(claude_api_url, headers=headers, json=data, timeout=10)
-
-        st.write(f"Response status code: {response.status_code}")
-        st.write(f"Response headers: {response.headers}")
-        st.write(f"Response content: {response.text}")
-
-        response.raise_for_status()
-        response_json = response.json()
-        st.write("Received response from Claude 3.5 Sonnet")
-
-        return response_json['content'][0]['text']
-    except requests.exceptions.Timeout:
-        st.error("The request to Claude timed out.")
-        return None
-    except requests.exceptions.RequestException as e:
-        st.error(f"An error occurred while communicating with Claude: {e}")
-        st.error(f"Response content: {e.response.text if e.response else 'No response content'}")
-        return None
-
-# Function to query Claude with context from the vector DB
+# Function to query Claude with context from vector DB
 def query_claude_with_data(question, matters_data, matters_index, matters_vectorizer):
     try:
-        st.write("Processing query...")
-        question = ' '.join(question.split()[-3:])  # Consider the last three words in the query
+        question = ' '.join(question.split()[-3:])
         question_vec = matters_vectorizer.transform([question])
 
-        st.write("Performing vector search...")
         D, I = matters_index.search(normalize(question_vec).toarray(), k=10)
 
-        if I.size > 0 and not (I == -1).all():
-            relevant_data = matters_data.iloc[I[0]]
-        else:
-            relevant_data = matters_data.head(1)  # Fallback to the first entry if no match found
+        relevant_data = matters_data.iloc[I[0]] if I.size > 0 and not (I == -1).all() else matters_data.head(1)
 
-        st.write("Filtering relevant data...")
         filtered_data = relevant_data[['Attorney', 'Practice Area', 'Matter Description', 'Work Email', 'Role Detail']].rename(columns={'Role Detail': 'Role'}).drop_duplicates(subset=['Attorney'])
 
         if filtered_data.empty:
@@ -96,24 +59,20 @@ def query_claude_with_data(question, matters_data, matters_index, matters_vector
 
         context = filtered_data.to_string(index=False)
         messages = [
-            {"role": "system", "content": "You are the CEO of a prestigious law firm..."},
+            {"role": "system", "content": "You are the CEO of a prestigious law firm with access to detailed records of attorney matters history and expertise. I need you to recommend the best lawyer for a given legal matter based on the data available to you. Your recommendation should be based on actual data, such as past matters, the attorney's expertise, attorney's biographical information, and any relevant legal specialties. When possible, cite relevant matters or past experiences that demonstrate why the recommended attorney is a strong fit for the matter. Do not fabricate any information or assume details not found in the data. Always strive to make the most informed and confident recommendation based on what you know. Based on the question, you can make connections on what type of case an attorney would be a good one based on their experience. You can use outside legal information outside of the csv file to do this but only return names in the file. Even if the specific query is not in the database try your best to make a recommendation for a lawyer that could potentially work on that case. That would be helpful.There is a column called slack messages. I want you to read through the columns Attorney, Role, Area of Expertise, Client, Matter Description and Slack Messages when you make a decision.Do not expect the query to have all the information. Make your best guess for the output."},
             {"role": "user", "content": f"Based on the following information, please make a recommendation:\n\n{context}\n\nRecommendation:"}
         ]
 
-        st.write("Calling Claude 3.5 Sonnet for recommendation...")
         claude_response = call_claude(messages)
 
-        if not claude_response:
-            return
-
-        st.write("Processing Claude's recommendations...")
         recommendations = claude_response.split('\n')
         recommendations = [rec for rec in recommendations if rec.strip()]
         recommendations = list(dict.fromkeys(recommendations))
+
         recommendations_df = pd.DataFrame(recommendations, columns=['Recommendation Reasoning'])
 
-        st.write("Displaying results...")
         top_recommended_lawyers = filtered_data.drop_duplicates(subset=['Attorney'])
+
         st.write("All Potential Lawyers with Recommended Skillset:")
         st.write(top_recommended_lawyers.to_html(index=False), unsafe_allow_html=True)
         st.write("Recommendation Reasoning:")
@@ -128,8 +87,9 @@ def query_claude_with_data(question, matters_data, matters_index, matters_vector
         st.error(f"Error querying Claude: {e}")
 
 # Streamlit app layout
-st.title("Rolodex AI: Find Your Ideal Lawyer 👨‍⚖️ Utilizing Claude 3.5 Sonnet")
-st.write("Ask questions about the top lawyers in a specific practice area:")
+st.title("Rolodex AI: Find Your Ideal Lawyer 👨‍⚖️ Utilizing Anthropic Claude 3.5 Sonnet")
+st.write("Ask questions about the top lawyers in a specific practice area at Scale LLP:")
+st.write("Note this is a prototype and can make mistakes!")
 
 # Default questions as buttons
 default_questions = {
@@ -152,14 +112,12 @@ if not user_input:
     user_input = st.text_input("Or type your own question:", placeholder="e.g., 'Who are the top lawyers for corporate law?'")
 
 if user_input:
-    st.cache_data.clear()  # Clear cache before each search
+    st.cache_data.clear()
 
-    # Load CSV data on the backend
-    matters_data = load_and_clean_data('Cleaned_Matters_Data.csv', encoding='latin1')  # Ensure correct file path and encoding
+    matters_data = load_and_clean_data('Cleaned_Matters_Data.csv', encoding='latin1')
 
     if not matters_data.empty:
-        # Ensure the correct column names are used
-        matters_index, matters_vectorizer = create_vector_db(matters_data, ['Attorney', 'Matter Description'])  # Adjusted columns
+        matters_index, matters_vectorizer = create_vector_db(matters_data, ['Attorney', 'Matter Description'])
 
         if matters_index is not None:
             query_claude_with_data(user_input, matters_data, matters_index, matters_vectorizer)
@@ -171,13 +129,11 @@ if user_input:
     accuracy_options = ["Accurate", "Not Accurate", "Type your own feedback"]
     accuracy_choice = st.radio("Please select one:", accuracy_options)
 
-    # If user chooses to type their own feedback, display a text input field
     if accuracy_choice == "Type your own feedback":
         custom_feedback = st.text_input("Please provide your feedback:")
     else:
         custom_feedback = accuracy_choice
 
-    # Optionally, save or process this feedback
     if st.button("Submit Feedback"):
         if custom_feedback:
             st.write(f"Thank you for your feedback: '{custom_feedback}'")
