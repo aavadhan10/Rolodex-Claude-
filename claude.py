@@ -8,7 +8,7 @@ import time
 
 # Initialize Claude API using environment variable
 claude_api_key = st.secrets["claude"]["CLAUDE_API_KEY"]
-claude_api_url = "https://api.anthropic.com/v1/complete"  # Update this with the correct URL for Claude 3.5 Sonnet
+claude_api_url = "https://api.anthropic.com/v1/complete"  # Correct API endpoint for Claude 3.5 Sonnet
 
 # Load and clean CSV data with specified encoding
 @st.cache_data
@@ -33,7 +33,7 @@ def create_vector_db(data, columns):
     st.write(f"Vector DB created in {time.time() - start_time:.2f} seconds")
     return index, vectorizer
 
-# Function to call Claude 3.5 Sonnet
+# Function to call Claude 3.5 Sonnet using POST method
 def call_claude(messages):
     headers = {
         "Authorization": f"Bearer {claude_api_key}",
@@ -41,7 +41,7 @@ def call_claude(messages):
     }
     data = {
         "model": "claude-3.5-sonnet",  # Update to Claude 3.5 Sonnet model
-        "messages": messages,
+        "prompt": messages,
         "max_tokens": 150,
         "temperature": 0.9,
     }
@@ -111,7 +111,6 @@ def query_claude_with_data(question, matters_data, matters_index, matters_vector
             lawyer_matters = matters_data[matters_data['Attorney'] == lawyer][['Practice Area', 'Matter Description']]
             st.write(lawyer_matters.to_html(index=False), unsafe_allow_html=True)
 
-
     except Exception as e:
         st.error(f"Error querying Claude: {e}")
 
@@ -171,4 +170,3 @@ if user_input:
             st.write(f"Thank you for your feedback: '{custom_feedback}'")
         else:
             st.error("Please provide feedback before submitting.")
-
