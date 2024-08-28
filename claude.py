@@ -8,13 +8,7 @@ import time
 
 # Initialize Claude API using environment variable
 claude_api_key = st.secrets["claude"]["CLAUDE_API_KEY"]
-
-# Toggle between new and old API endpoints
-use_new_api = st.sidebar.checkbox("Use new Claude API", value=True)
-if use_new_api:
-    claude_api_url = "https://api.anthropic.com/v1/messages"
-else:
-    claude_api_url = "https://api.anthropic.com/v1/complete"
+claude_api_url = "https://api.anthropic.com/v1/messages"
 
 # Load and clean CSV data with specified encoding
 @st.cache_data
@@ -42,46 +36,35 @@ def create_vector_db(data, columns):
 # Function to call Claude with debugging information
 def call_claude(messages):
     headers = {
-        "Authorization": f"Bearer {claude_api_key}",
-        "Content-Type": "application/json",
-        "anthropic-version": "2023-06-01"
+        "x-api-key": claude_api_key,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json"
     }
     
-    if use_new_api:
-        data = {
-            "model": "claude-3.5-sonnet",
-            "messages": messages,
-            "max_tokens": 150,
-            "temperature": 0.9
-        }
-    else:
-        data = {
-            "model": "claude-3.5-sonnet",
-            "prompt": "\n\n".join([f"{m['role']}: {m['content']}" for m in messages]),
-            "max_tokens_to_sample": 150,
-            "temperature": 0.9
-        }
-    
+    data = {
+        "model": "claude-3.5-sonnet",
+        "max_tokens": 150,
+        "messages": messages,
+        "temperature": 0.9
+    }
+
     try:
         st.write("Calling Claude 3.5 Sonnet...")
         st.write(f"API URL: {claude_api_url}")
         st.write(f"Headers: {headers}")
         st.write(f"Data: {data}")
-        
+
         response = requests.post(claude_api_url, headers=headers, json=data, timeout=10)
-        
+
         st.write(f"Response status code: {response.status_code}")
         st.write(f"Response headers: {response.headers}")
         st.write(f"Response content: {response.text}")
-        
+
         response.raise_for_status()
         response_json = response.json()
         st.write("Received response from Claude 3.5 Sonnet")
-        
-        if use_new_api:
-            return response_json['content'][0]['text'].strip()
-        else:
-            return response_json['completion'].strip()
+
+        return response_json['content'][0]['text']
     except requests.exceptions.Timeout:
         st.error("The request to Claude timed out.")
         return None
@@ -96,18 +79,18 @@ def query_claude_with_data(question, matters_data, matters_index, matters_vector
         st.write("Processing query...")
         question = ' '.join(question.split()[-3:])  # Consider the last three words in the query
         question_vec = matters_vectorizer.transform([question])
-        
+
         st.write("Performing vector search...")
         D, I = matters_index.search(normalize(question_vec).toarray(), k=10)
-        
+
         if I.size > 0 and not (I == -1).all():
             relevant_data = matters_data.iloc[I[0]]
         else:
             relevant_data = matters_data.head(1)  # Fallback to the first entry if no match found
-        
+
         st.write("Filtering relevant data...")
         filtered_data = relevant_data[['Attorney', 'Practice Area', 'Matter Description', 'Work Email', 'Role Detail']].rename(columns={'Role Detail': 'Role'}).drop_duplicates(subset=['Attorney'])
-        
+
         if filtered_data.empty:
             filtered_data = matters_data[['Attorney', 'Practice Area', 'Matter Description', 'Work Email', 'Role Detail']].rename(columns={'Role Detail': 'Role'}).dropna(subset=['Attorney']).drop_duplicates(subset=['Attorney']).head(1)
 
@@ -116,13 +99,13 @@ def query_claude_with_data(question, matters_data, matters_index, matters_vector
             {"role": "system", "content": "You are the CEO of a prestigious law firm..."},
             {"role": "user", "content": f"Based on the following information, please make a recommendation:\n\n{context}\n\nRecommendation:"}
         ]
-        
+
         st.write("Calling Claude 3.5 Sonnet for recommendation...")
         claude_response = call_claude(messages)
-        
+
         if not claude_response:
             return
-        
+
         st.write("Processing Claude's recommendations...")
         recommendations = claude_response.split('\n')
         recommendations = [rec for rec in recommendations if rec.strip()]
@@ -173,11 +156,11 @@ if user_input:
 
     # Load CSV data on the backend
     matters_data = load_and_clean_data('Cleaned_Matters_Data.csv', encoding='latin1')  # Ensure correct file path and encoding
-    
+
     if not matters_data.empty:
         # Ensure the correct column names are used
         matters_index, matters_vectorizer = create_vector_db(matters_data, ['Attorney', 'Matter Description'])  # Adjusted columns
-        
+
         if matters_index is not None:
             query_claude_with_data(user_input, matters_data, matters_index, matters_vectorizer)
     else:
