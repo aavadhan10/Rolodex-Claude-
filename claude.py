@@ -8,20 +8,20 @@ import time
 
 # Initialize Claude API using environment variable
 claude_api_key = st.secrets["claude"]["CLAUDE_API_KEY"]
-claude_api_url = "https://api.anthropic.com/v1/complete"  # Correct API endpoint for Claude 3.5 Sonnet
+claude_api_url = "https://api.anthropic.com/v1/messages"  # Updated API endpoint for Claude 3.5 Sonnet
 
 # Load and clean CSV data with specified encoding
 @st.cache_data
 def load_and_clean_data(file_path, encoding='latin1'):
     start_time = time.time()
     data = pd.read_csv(file_path, encoding=encoding)
-    data.columns = data.columns.str.replace('ï»¿', '').str.replace('Ã', '').str.strip()  # Clean unusual characters and whitespace
+    data.columns = data.columns.str.replace('ï»¿', '').str.replace('Ã', '').str.strip()  # Clean unusual characters and whitespace
     data = data.loc[:, ~data.columns.str.contains('^Unnamed')]  # Remove unnamed columns
     st.write(f"Data loaded and cleaned in {time.time() - start_time:.2f} seconds")
     return data
 
 # Create vector database for a given dataframe and columns
-@st.cache(allow_output_mutation=True)
+@st.cache_resource
 def create_vector_db(data, columns):
     start_time = time.time()
     combined_text = data[columns].fillna('').apply(lambda x: ' '.join(x.astype(str)), axis=1)
@@ -37,22 +37,23 @@ def create_vector_db(data, columns):
 def call_claude(messages):
     headers = {
         "Authorization": f"Bearer {claude_api_key}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "anthropic-version": "2023-06-01"
     }
     data = {
-        "model": "claude-3.5-sonnet",  # Update to Claude 3.5 Sonnet model
-        "prompt": messages,
+        "model": "claude-3.5-sonnet",
+        "messages": messages,
         "max_tokens": 150,
-        "temperature": 0.9,
+        "temperature": 0.9
     }
     
     try:
         st.write("Calling Claude 3.5 Sonnet...")
-        response = requests.post(claude_api_url, headers=headers, json=data, timeout=10)  # Timeout after 10 seconds
-        response.raise_for_status()  # Raises an error for bad responses (4xx, 5xx)
+        response = requests.post(claude_api_url, headers=headers, json=data, timeout=10)
+        response.raise_for_status()
         response_json = response.json()
         st.write("Received response from Claude 3.5 Sonnet")
-        return response_json['choices'][0]['message']['content'].strip()
+        return response_json['content'][0]['text'].strip()
     except requests.exceptions.Timeout:
         st.error("The request to Claude timed out.")
         return None
