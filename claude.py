@@ -1,14 +1,37 @@
 import streamlit as st
 import requests
 import pandas as pd
+import faiss
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import normalize
+import time
 
 # Initialize Claude API using environment variable
 claude_api_key = st.secrets["claude"]["CLAUDE_API_KEY"]
 claude_api_url = "https://api.claude.ai/v1/chat/completions"
 
-st.write("Starting app...")
+# Load and clean CSV data with specified encoding
+@st.cache_data
+def load_and_clean_data(file_path, encoding='latin1'):
+    start_time = time.time()
+    data = pd.read_csv(file_path, encoding=encoding)
+    data.columns = data.columns.str.replace('ï»¿', '').str.replace('Ã', '').str.strip()  # Clean unusual characters and whitespace
+    data = data.loc[:, ~data.columns.str.contains('^Unnamed')]  # Remove unnamed columns
+    st.write(f"Data loaded and cleaned in {time.time() - start_time:.2f} seconds")
+    return data
+
+# Create vector database for a given dataframe and columns
+@st.cache(allow_output_mutation=True)
+def create_vector_db(data, columns):
+    start_time = time.time()
+    combined_text = data[columns].fillna('').apply(lambda x: ' '.join(x.astype(str)), axis=1)
+    vectorizer = TfidfVectorizer(stop_words='english', max_features=5000)
+    X = vectorizer.fit_transform(combined_text)
+    X = normalize(X)
+    index = faiss.IndexFlatL2(X.shape[1])
+    index.add(X.toarray())
+    st.write(f"Vector DB created in {time.time() - start_time:.2f} seconds")
+    return index, vectorizer
 
 # Function to call Claude
 def call_claude(messages):
@@ -17,18 +40,18 @@ def call_claude(messages):
         "Content-Type": "application/json"
     }
     data = {
-        "model": "claude-v1",
+        "model": "claude-v1",  # Adjust model name if necessary
         "messages": messages,
         "max_tokens": 150,
         "temperature": 0.9,
     }
     
     try:
-        st.write("Sending request to Claude...")
-        response = requests.post(claude_api_url, headers=headers, json=data, timeout=10)
-        response.raise_for_status()
+        st.write("Calling Claude...")
+        response = requests.post(claude_api_url, headers=headers, json=data, timeout=10)  # Timeout after 10 seconds
+        response.raise_for_status()  # Raises an error for bad responses (4xx, 5xx)
         response_json = response.json()
-        st.write("Received response from Claude.")
+        st.write("Received response from Claude")
         return response_json['choices'][0]['message']['content'].strip()
     except requests.exceptions.Timeout:
         st.error("The request to Claude timed out.")
@@ -37,33 +60,26 @@ def call_claude(messages):
         st.error(f"An error occurred while communicating with Claude: {e}")
         return None
 
-# Vectorize the questions and data
-def vectorize_data(matters_data, text_column='Matter Description'):
-    vectorizer = TfidfVectorizer(stop_words='english')
-    vectors = vectorizer.fit_transform(matters_data[text_column].fillna(''))
-    return vectors, vectorizer
-
-# Query Claude with Data
+# Function to query Claude with context from the vector DB
 def query_claude_with_data(question, matters_data, matters_index, matters_vectorizer):
     try:
-        st.write("Vectorizing the question...")
-        question = ' '.join(question.split()[-3:])
+        st.write("Processing query...")
+        question = ' '.join(question.split()[-3:])  # Consider the last three words in the query
         question_vec = matters_vectorizer.transform([question])
         
         st.write("Performing vector search...")
         D, I = matters_index.search(normalize(question_vec).toarray(), k=10)
+        
         if I.size > 0 and not (I == -1).all():
             relevant_data = matters_data.iloc[I[0]]
         else:
-            relevant_data = matters_data.head(1)  # Fallback
+            relevant_data = matters_data.head(1)  # Fallback to the first entry if no match found
         
-        st.write("Filtering the data...")
-        filtered_data = relevant_data[['Attorney', 'Practice Area', 'Matter Description', 'Work Email', 'Role Detail']]
-        filtered_data = filtered_data.rename(columns={'Role Detail': 'Role'}).drop_duplicates(subset=['Attorney'])
+        st.write("Filtering relevant data...")
+        filtered_data = relevant_data[['Attorney', 'Practice Area', 'Matter Description', 'Work Email', 'Role Detail']].rename(columns={'Role Detail': 'Role'}).drop_duplicates(subset=['Attorney'])
         
         if filtered_data.empty:
-            filtered_data = matters_data[['Attorney', 'Practice Area', 'Matter Description', 'Work Email', 'Role Detail']]
-            filtered_data = filtered_data.rename(columns={'Role Detail': 'Role'}).dropna(subset=['Attorney']).drop_duplicates(subset=['Attorney']).head(1)
+            filtered_data = matters_data[['Attorney', 'Practice Area', 'Matter Description', 'Work Email', 'Role Detail']].rename(columns={'Role Detail': 'Role'}).dropna(subset=['Attorney']).drop_duplicates(subset=['Attorney']).head(1)
 
         context = filtered_data.to_string(index=False)
         messages = [
@@ -71,16 +87,18 @@ def query_claude_with_data(question, matters_data, matters_index, matters_vector
             {"role": "user", "content": f"Based on the following information, please make a recommendation:\n\n{context}\n\nRecommendation:"}
         ]
         
-        st.write("Calling Claude API with filtered data...")
+        st.write("Calling Claude for recommendation...")
         claude_response = call_claude(messages)
-        if not claude_response:
-            return  # Exit if Claude API failed
         
+        if not claude_response:
+            return
+        
+        st.write("Processing Claude's recommendations...")
         recommendations = claude_response.split('\n')
         recommendations = [rec for rec in recommendations if rec.strip()]
         recommendations = list(dict.fromkeys(recommendations))
         recommendations_df = pd.DataFrame(recommendations, columns=['Recommendation Reasoning'])
-        
+
         st.write("Displaying results...")
         top_recommended_lawyers = filtered_data.drop_duplicates(subset=['Attorney'])
         st.write("All Potential Lawyers with Recommended Skillset:")
@@ -96,7 +114,59 @@ def query_claude_with_data(question, matters_data, matters_index, matters_vector
     except Exception as e:
         st.error(f"Error querying Claude: {e}")
 
-# Example usage:
-# Assuming matters_data is your DataFrame and matters_index is a FAISS index
-# matters_vectors, matters_vectorizer = vectorize_data(matters_data)
-# query_claude_with_data("What are the top lawyers for this case?", matters_data, matters_index, matters_vectorizer)
+# Streamlit app layout
+st.title("Rolodex AI: Find Your Ideal Lawyer 👨‍⚖️ Utilizing Claude")
+st.write("Ask questions about the top lawyers in a specific practice area:")
+
+# Default questions as buttons
+default_questions = {
+    "Who are the top lawyers for corporate law?": "corporate law",
+    "Which attorneys have the most experience with intellectual property?": "intellectual property",
+    "Can you recommend a lawyer specializing in employment law?": "employment law",
+    "Who are the best litigators for financial cases?": "financial law",
+    "Which lawyer should I contact for real estate matters?": "real estate"
+}
+
+# Check if a default question button is clicked
+user_input = ""
+for question_text, question_value in default_questions.items():
+    if st.button(question_text):
+        user_input = question_text
+        break
+
+# Also allow users to input custom questions
+if not user_input:
+    user_input = st.text_input("Or type your own question:", placeholder="e.g., 'Who are the top lawyers for corporate law?'")
+
+if user_input:
+    st.cache_data.clear()  # Clear cache before each search
+
+    # Load CSV data on the backend
+    matters_data = load_and_clean_data('Cleaned_Matters_Data.csv', encoding='latin1')  # Ensure correct file path and encoding
+    
+    if not matters_data.empty:
+        # Ensure the correct column names are used
+        matters_index, matters_vectorizer = create_vector_db(matters_data, ['Attorney', 'Matter Description'])  # Adjusted columns
+        
+        if matters_index is not None:
+            query_claude_with_data(user_input, matters_data, matters_index, matters_vectorizer)
+    else:
+        st.error("Failed to load data.")
+
+    # Accuracy feedback section
+    st.write("### How accurate was this result?")
+    accuracy_options = ["Accurate", "Not Accurate", "Type your own feedback"]
+    accuracy_choice = st.radio("Please select one:", accuracy_options)
+
+    # If user chooses to type their own feedback, display a text input field
+    if accuracy_choice == "Type your own feedback":
+        custom_feedback = st.text_input("Please provide your feedback:")
+    else:
+        custom_feedback = accuracy_choice
+
+    # Optionally, save or process this feedback
+    if st.button("Submit Feedback"):
+        if custom_feedback:
+            st.write(f"Thank you for your feedback: '{custom_feedback}'")
+        else:
+            st.error("Please provide feedback before submitting.")
