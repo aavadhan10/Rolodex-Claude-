@@ -8,7 +8,7 @@ import time
 
 # Initialize Claude API using environment variable
 claude_api_key = st.secrets["claude"]["CLAUDE_API_KEY"]
-claude_api_url = "https://api.claude.ai/v1/chat/completions"
+claude_api_url = "https://api.anthropic.com/v1/complete"  # Update this with the correct URL for Claude 3.5 Sonnet
 
 # Load and clean CSV data with specified encoding
 @st.cache_data
@@ -33,25 +33,25 @@ def create_vector_db(data, columns):
     st.write(f"Vector DB created in {time.time() - start_time:.2f} seconds")
     return index, vectorizer
 
-# Function to call Claude
+# Function to call Claude 3.5 Sonnet
 def call_claude(messages):
     headers = {
         "Authorization": f"Bearer {claude_api_key}",
         "Content-Type": "application/json"
     }
     data = {
-        "model": "claude-v1",  # Adjust model name if necessary
+        "model": "claude-3.5-sonnet",  # Update to Claude 3.5 Sonnet model
         "messages": messages,
         "max_tokens": 150,
         "temperature": 0.9,
     }
     
     try:
-        st.write("Calling Claude...")
+        st.write("Calling Claude 3.5 Sonnet...")
         response = requests.post(claude_api_url, headers=headers, json=data, timeout=10)  # Timeout after 10 seconds
         response.raise_for_status()  # Raises an error for bad responses (4xx, 5xx)
         response_json = response.json()
-        st.write("Received response from Claude")
+        st.write("Received response from Claude 3.5 Sonnet")
         return response_json['choices'][0]['message']['content'].strip()
     except requests.exceptions.Timeout:
         st.error("The request to Claude timed out.")
@@ -87,7 +87,7 @@ def query_claude_with_data(question, matters_data, matters_index, matters_vector
             {"role": "user", "content": f"Based on the following information, please make a recommendation:\n\n{context}\n\nRecommendation:"}
         ]
         
-        st.write("Calling Claude for recommendation...")
+        st.write("Calling Claude 3.5 Sonnet for recommendation...")
         claude_response = call_claude(messages)
         
         if not claude_response:
@@ -95,7 +95,7 @@ def query_claude_with_data(question, matters_data, matters_index, matters_vector
         
         st.write("Processing Claude's recommendations...")
         recommendations = claude_response.split('\n')
-        recommendations = [rec for rec in recommendations if rec.strip()]
+        recommendations are [rec for rec in recommendations if rec.strip()]
         recommendations = list(dict.fromkeys(recommendations))
         recommendations_df = pd.DataFrame(recommendations, columns=['Recommendation Reasoning'])
 
@@ -115,7 +115,7 @@ def query_claude_with_data(question, matters_data, matters_index, matters_vector
         st.error(f"Error querying Claude: {e}")
 
 # Streamlit app layout
-st.title("Rolodex AI: Find Your Ideal Lawyer 👨‍⚖️ Utilizing Claude")
+st.title("Rolodex AI: Find Your Ideal Lawyer 👨‍⚖️ Utilizing Claude 3.5 Sonnet")
 st.write("Ask questions about the top lawyers in a specific practice area:")
 
 # Default questions as buttons
