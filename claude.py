@@ -1,141 +1,125 @@
-import anthropic
 import streamlit as st
 import pandas as pd
-import faiss
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.preprocessing import normalize
-from dotenv import load_dotenv
-import os 
+from anthropic import Anthropic
+import re
+from datetime import datetime
 
-# Load environment variables
-load_dotenv()
+def init_anthropic_client():
+    claude_api_key = st.secrets["CLAUDE_API_KEY"]
+    if not claude_api_key:
+        st.error("Anthropic API key not found. Please check your Streamlit secrets configuration.")
+        st.stop()
+    return Anthropic(api_key=claude_api_key)
 
-# Initialize Anthropic API using environment variable
-client = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
+client = init_anthropic_client()
 
-# Load and clean CSV data with specified encoding
-@st.cache_data
-def load_and_clean_data(file_path, encoding='latin1'):
-    data = pd.read_csv(file_path, encoding=encoding)
-    data.columns = data.columns.str.replace('ï»¿', '').str.replace('Ã', '').str.strip()
-    data = data.loc[:, ~data.columns.str.contains('^Unnamed')]
+def load_and_clean_data(file_path, encoding='utf-8'):
+    try:
+        data = pd.read_csv(file_path, encoding=encoding)
+    except UnicodeDecodeError:
+        data = pd.read_csv(file_path, encoding='latin-1')
+    
+    data.columns = data.columns.str.strip()
     return data
 
-# Create vector database for a given dataframe and columns
-@st.cache(allow_output_mutation=True)
-def create_vector_db(data, columns):
-    combined_text = data[columns].fillna('').apply(lambda x: ' '.join(x.astype(str)), axis=1)
-    vectorizer = TfidfVectorizer(stop_words='english', max_features=5000)
-    X = vectorizer.fit_transform(combined_text)
-    X = normalize(X)
-    index = faiss.IndexFlatL2(X.shape[1])
-    index.add(X.toarray())
-    return index, vectorizer
-
-# Function to call Claude 3.5 Sonnet
 def call_claude(messages):
-    response = client.messages.create(
-        model="claude-3-sonnet-20240229",
-        max_tokens=150,
-        temperature=0.9,
-        messages=messages
-    )
-    return response.content[0].text
-
-# Function to query Claude with context from vector DB
-def query_claude_with_data(question, matters_data, matters_index, matters_vectorizer):
     try:
-        question = ' '.join(question.split()[-3:])
-        question_vec = matters_vectorizer.transform([question])
-
-        D, I = matters_index.search(normalize(question_vec).toarray(), k=10)
-
-        relevant_data = matters_data.iloc[I[0]] if I.size > 0 and not (I == -1).all() else matters_data.head(1)
-
-        filtered_data = relevant_data[['Attorney', 'Practice Area', 'Matter Description', 'Work Email', 'Role Detail']].rename(columns={'Role Detail': 'Role'}).drop_duplicates(subset=['Attorney'])
-
-        if filtered_data.empty:
-            filtered_data = matters_data[['Attorney', 'Practice Area', 'Matter Description', 'Work Email', 'Role Detail']].rename(columns={'Role Detail': 'Role'}).dropna(subset=['Attorney']).drop_duplicates(subset=['Attorney']).head(1)
-
-        context = filtered_data.to_string(index=False)
-        messages = [
-            {"role": "system", "content": "You are the CEO of a prestigious law firm with access to detailed records of attorney matters history and expertise. I need you to recommend the best lawyer for a given legal matter based on the data available to you. Your recommendation should be based on actual data, such as past matters, the attorney's expertise, attorney's biographical information, and any relevant legal specialties. When possible, cite relevant matters or past experiences that demonstrate why the recommended attorney is a strong fit for the matter. Do not fabricate any information or assume details not found in the data. Always strive to make the most informed and confident recommendation based on what you know. Based on the question, you can make connections on what type of case an attorney would be a good one based on their experience. You can use outside legal information outside of the csv file to do this but only return names in the file. Even if the specific query is not in the database try your best to make a recommendation for a lawyer that could potentially work on that case. That would be helpful.There is a column called slack messages. I want you to read through the columns Attorney, Role, Area of Expertise, Client, Matter Description and Slack Messages when you make a decision.Do not expect the query to have all the information. Make your best guess for the output."},
-            {"role": "user", "content": f"Based on the following information, please make a recommendation:\n\n{context}\n\nRecommendation:"}
-        ]
-
-        claude_response = call_claude(messages)
-
-        recommendations = claude_response.split('\n')
-        recommendations = [rec for rec in recommendations if rec.strip()]
-        recommendations = list(dict.fromkeys(recommendations))
-
-        recommendations_df = pd.DataFrame(recommendations, columns=['Recommendation Reasoning'])
-
-        top_recommended_lawyers = filtered_data.drop_duplicates(subset=['Attorney'])
-
-        st.write("All Potential Lawyers with Recommended Skillset:")
-        st.write(top_recommended_lawyers.to_html(index=False), unsafe_allow_html=True)
-        st.write("Recommendation Reasoning:")
-        st.write(recommendations_df.to_html(index=False), unsafe_allow_html=True)
-
-        for lawyer in top_recommended_lawyers['Attorney'].unique():
-            st.write(f"**{lawyer}'s Matters:**")
-            lawyer_matters = matters_data[matters_data['Attorney'] == lawyer][['Practice Area', 'Matter Description']]
-            st.write(lawyer_matters.to_html(index=False), unsafe_allow_html=True)
-
+        response = client.messages.create(
+            model="claude-3-sonnet-20240229",
+            max_tokens=1500,
+            temperature=0.7,
+            messages=[
+                {"role": "system", "content": messages[0]['content']},
+                {"role": "user", "content": messages[1]['content']}
+            ]
+        )
+        return response.content[0].text
     except Exception as e:
-        st.error(f"Error querying Claude: {e}")
+        st.error(f"Error calling Claude: {e}")
+        return None
+
+def extract_conflict_info(data, client_name):
+    relevant_data = data[
+        (data['Client Name'].str.contains(client_name, case=False, na=False)) |
+        (data['Matter'].str.contains(client_name, case=False, na=False)) |
+        (data['Matter Description'].str.contains(client_name, case=False, na=False))
+    ]
+
+    if relevant_data.empty:
+        return pd.DataFrame(columns=['Client', 'Conflict Type', 'Details'])
+
+    messages = [
+        {"role": "system", "content": "You are a legal assistant tasked with identifying potential conflicts of interest, opponents, and business owners related to a client."},
+        {"role": "user", "content": f"""Analyze the following data for the client '{client_name}'. Identify:
+1. If the client has worked with the law firm before (indicating a potential conflict)
+2. Potential opponents of the client (look for 'vs' or similar indicators in the Matter or Matter Description)
+3. Any mentioned business owners related to the client
+
+For each identified item, provide the following in a structured format:
+- Client: The name of the client
+- Conflict Type: Either 'Prior Work', 'Potential Opponent', or 'Business Owner'
+- Details: Relevant details about the conflict, opponent, or business owner
+
+Here's the relevant data:
+
+{relevant_data.to_string()}
+
+Provide your analysis in a structured format that can be easily converted to a table."""}
+    ]
+
+    claude_response = call_claude(messages)
+    if not claude_response:
+        return pd.DataFrame(columns=['Client', 'Conflict Type', 'Details'])
+
+    # Parse Claude's response into a structured format
+    lines = claude_response.split('\n')
+    parsed_data = []
+    current_entry = {}
+    for line in lines:
+        if line.startswith('Client:'):
+            if current_entry:
+                parsed_data.append(current_entry)
+            current_entry = {'Client': line.split('Client:')[1].strip()}
+        elif line.startswith('Conflict Type:'):
+            current_entry['Conflict Type'] = line.split('Conflict Type:')[1].strip()
+        elif line.startswith('Details:'):
+            current_entry['Details'] = line.split('Details:')[1].strip()
+    if current_entry:
+        parsed_data.append(current_entry)
+
+    return pd.DataFrame(parsed_data)
 
 # Streamlit app layout
-st.title("Rolodex AI: Find Your Ideal Lawyer 👨‍⚖️ Utilizing Anthropic Claude 3.5 Sonnet")
-st.write("Ask questions about the top lawyers in a specific practice area at Scale LLP:")
-st.write("Note this is a prototype and can make mistakes!")
+st.title("Rolodex AI: Structured Conflict Check (Claude 3 Sonnet)")
 
-# Default questions as buttons
-default_questions = {
-    "Who are the top lawyers for corporate law?": "corporate law",
-    "Which attorneys have the most experience with intellectual property?": "intellectual property",
-    "Can you recommend a lawyer specializing in employment law?": "employment law",
-    "Who are the best litigators for financial cases?": "financial law",
-    "Which lawyer should I contact for real estate matters?": "real estate"
-}
+# Data Overview Section
+st.header("Data Overview")
+col1, col2 = st.columns(2)
+with col1:
+    st.metric("Number of Matters Worked with", "10059")
+with col2:
+    st.metric("Data Updated from Clio API", "Last Update: 9/14/2024")
 
-# Check if a default question button is clicked
-user_input = ""
-for question_text, question_value in default_questions.items():
-    if st.button(question_text):
-        user_input = question_text
-        break
+st.write("---")  # Adds a horizontal line for separation
 
-# Also allow users to input custom questions
-if not user_input:
-    user_input = st.text_input("Or type your own question:", placeholder="e.g., 'Who are the top lawyers for corporate law?'")
+st.write("Enter a client name to perform a conflict check:")
+
+user_input = st.text_input("Client Name:", placeholder="e.g., 'Scale LLP'")
 
 if user_input:
-    st.cache_data.clear()
-
-    matters_data = load_and_clean_data('Cleaned_Matters_Data.csv', encoding='latin1')
-
+    progress_bar = st.progress(0)
+    progress_bar.progress(10)
+    matters_data = load_and_clean_data('combined_contact_and_matters.csv')
     if not matters_data.empty:
-        matters_index, matters_vectorizer = create_vector_db(matters_data, ['Attorney', 'Matter Description'])
-
-        if matters_index is not None:
-            query_claude_with_data(user_input, matters_data, matters_index, matters_vectorizer)
+        progress_bar.progress(50)
+        conflict_df = extract_conflict_info(matters_data, user_input)
+        progress_bar.progress(90)
+        st.write("### Conflict Check Results:")
+        if not conflict_df.empty:
+            st.table(conflict_df)
+        else:
+            st.write("No potential conflicts or relevant information found.")
+        progress_bar.progress(100)
     else:
         st.error("Failed to load data.")
-
-    # Accuracy feedback section
-    st.write("### How accurate was this result?")
-    accuracy_options = ["Accurate", "Not Accurate", "Type your own feedback"]
-    accuracy_choice = st.radio("Please select one:", accuracy_options)
-
-    if accuracy_choice == "Type your own feedback":
-        custom_feedback = st.text_input("Please provide your feedback:")
-    else:
-        custom_feedback = accuracy_choice
-
-    if st.button("Submit Feedback"):
-        if custom_feedback:
-            st.write(f"Thank you for your feedback: '{custom_feedback}'")
-        else:
-            st.error("Please provide feedback before submitting.")
+    progress_bar.empty()
