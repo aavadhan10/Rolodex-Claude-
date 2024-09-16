@@ -1,8 +1,6 @@
 import streamlit as st
 import pandas as pd
 from anthropic import Anthropic
-import re
-from datetime import datetime
 
 def init_anthropic_client():
     claude_api_key = st.secrets["CLAUDE_API_KEY"]
@@ -40,9 +38,9 @@ def call_claude(messages):
 
 def extract_conflict_info(data, client_name):
     relevant_data = data[
-        (data['Client Name'].str.contains(client_name, case=False, na=False)) |
-        (data['Matter'].str.contains(client_name, case=False, na=False)) |
-        (data['Matter Description'].str.contains(client_name, case=False, na=False))
+        data['Client Name'].str.contains(client_name, case=False, na=False) |
+        data['Matter'].str.contains(client_name, case=False, na=False) |
+        data['Matter Description'].str.contains(client_name, case=False, na=False)
     ]
 
     if relevant_data.empty:
